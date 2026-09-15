@@ -28,7 +28,7 @@ w ustawieniach sieci Windows.
    - https://dns.watch
 
    Albo DNS-y wielkich firm:
-   - [Cloudflare](https://pl.wikipedia.org/wiki/1.1.1.1)
+   - [Cloudflare](https://one.one.one.one)
    - [Google DNS](https://developers.google.com/speed/public-dns?hl=pl)
 
 ## Jak to dokładnie działa?

@@ -24,7 +24,7 @@ No, just one minute. You run the program and You change two things in Windows ne
     - https://dns.watch
     - 
    Or IT giants ones:
-    - [CloudFlare](https://pl.wikipedia.org/wiki/1.1.1.1)
+    - [CloudFlare](https://one.one.one.one)
     - [Google DNS](https://developers.google.com/speed/public-dns?hl=pl)
  
 
