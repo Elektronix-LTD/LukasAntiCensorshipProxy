@@ -192,8 +192,12 @@ func configSearchDirs() []string {
 
 // isGoBuildCache reports directories where `go run` drops the temporary
 // binary. Writing lacp.json there would hide it from the user.
+//
+// filepath.ToSlash only converts the *local* separator, so a Windows path
+// with backslashes still contains `\go-build` on Linux CI. Normalize both.
 func isGoBuildCache(dir string) bool {
 	slash := filepath.ToSlash(dir)
+	slash = strings.ReplaceAll(slash, `\`, "/")
 	return strings.Contains(slash, "/go-build")
 }
 

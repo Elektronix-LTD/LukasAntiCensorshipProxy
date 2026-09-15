@@ -110,10 +110,24 @@ func TestLoadConfigInvalidJSON(t *testing.T) {
 }
 
 func TestIsGoBuildCache(t *testing.T) {
-	if !isGoBuildCache(`C:\Users\Lukas\AppData\Local\Temp\go-build123\b001`) {
-		t.Fatal("expected go-build path to be detected")
+	yes := []string{
+		`C:\Users\Lukas\AppData\Local\Temp\go-build123\b001`,
+		`/tmp/go-build123/b001`,
+		filepath.Join(os.TempDir(), "go-build123", "b001"),
 	}
-	if isGoBuildCache(`C:\Users\Lukas\sni-strip-proxy`) {
-		t.Fatal("project dir is not a go-build cache")
+	for _, dir := range yes {
+		if !isGoBuildCache(dir) {
+			t.Fatalf("expected go-build path to be detected: %q", dir)
+		}
+	}
+	no := []string{
+		`C:\Users\Lukas\sni-strip-proxy`,
+		`/home/runner/work/lacp/lacp`,
+		filepath.Join(os.TempDir(), "lacp"),
+	}
+	for _, dir := range no {
+		if isGoBuildCache(dir) {
+			t.Fatalf("project dir is not a go-build cache: %q", dir)
+		}
 	}
 }
