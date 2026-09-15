@@ -1,0 +1,18 @@
+# Locally built binaries (not committed — GitHub Actions rebuilds them
+# from scratch on every release).
+*.exe
+/lacp
+/lacp-*
+/sni-strip-proxy
+/sni-strip-proxy-*
+
+# Artifact directory if someone reproduces the pipeline locally.
+/dist/
+
+# Go / editor junk.
+*.test
+*.out
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db

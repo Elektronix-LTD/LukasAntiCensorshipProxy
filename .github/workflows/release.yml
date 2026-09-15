@@ -1,0 +1,336 @@
+# =============================================================================
+#  release.yml — automatic release on every commit to master (or main)
+# =============================================================================
+#
+# WHAT THIS WORKFLOW DOES
+# -----------------------
+# On every push to `master` (and `main`, GitHub's current default branch
+# name) the pipeline:
+#   1. checks out that commit,
+#   2. runs the Go tests — no green tests, no release,
+#   3. cross-compiles binaries:
+#        • Windows  amd64  →  lacp-windows-amd64.exe
+#        • Windows  arm64  →  lacp-windows-arm64.exe
+#        • macOS    amd64  →  lacp-darwin-amd64   (Intel)
+#        • macOS    arm64  →  lacp-darwin-arm64   (Apple Silicon)
+#   4. packs a clean source ZIP (for Linux and self-compilation),
+#   5. computes SHA-256 sums of every file,
+#   6. creates a GitHub Release tagged `master-<7-char SHA>` and uploads
+#      the artifacts.
+#
+# WHY THERE IS NO LINUX BINARY
+# ----------------------------
+# Deliberate: Linux gets a source ZIP so the user compiles locally
+# (`go build` or `make`). We do not use CGO, so building on any distro is
+# just "install Go".
+#
+# WHY ONE JOB ON ubuntu-latest, NOT MACOS-RUNNER / WINDOWS-RUNNER
+# ---------------------------------------------------------------
+# Go cross-compiles (GOOS/GOARCH) without CGO. No Xcode, no MSVC.
+# One runner = faster, cheaper, reproducible.
+#
+# REQUIRED REPOSITORY PERMISSIONS
+# -------------------------------
+# Settings → Actions → General → Workflow permissions
+#   → "Read and write permissions"  (or rely on `permissions:` below).
+# GITHUB_TOKEN is injected automatically — no extra secrets.
+#
+# MANUAL RUN
+# ----------
+# Actions → "Release (Windows, macOS, source)" → Run workflow.
+# Useful when you want to rebuild the latest commit without a new push.
+#
+# =============================================================================
+
+name: Release (Windows, macOS, source)
+
+# When to run the pipeline.
+on:
+  # Every new commit on master, plus main (GitHub's default name — without
+  # it the workflow would stay silent after a `git init` that created main).
+  push:
+    branches:
+      - master
+      - main
+
+  # Manual run from the Actions tab, without waiting for a push.
+  workflow_dispatch:
+
+# Minimum permissions: create tags, releases, and upload files.
+# Nothing else (no pull-request or issue rights).
+permissions:
+  contents: write
+
+# Two back-to-back pushes must not race (two tags / two releases at once).
+# We do not cancel an in-flight job — better to finish a release than leave
+# half the assets uploaded.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Test, build, and GitHub Release
+    runs-on: ubuntu-latest
+
+    steps:
+      # ------------------------------------------------------------------
+      # 1. Sources of the commit that triggered the workflow.
+      #    fetch-depth: 1 is enough — `git archive` packs the HEAD tree,
+      #    and the release tag points at GITHUB_SHA, so full history is
+      #    not needed.
+      # ------------------------------------------------------------------
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      # ------------------------------------------------------------------
+      # 2. Go version from go.mod (`go 1.22` → toolchain ≥ 1.22).
+      #    cache: true speeds up repeat jobs (modcache + build cache).
+      # ------------------------------------------------------------------
+      - name: Install Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # ------------------------------------------------------------------
+      # 3. Quality gate. If any test fails, later steps (build, release)
+      #    do not run — we do not ship a broken binary.
+      # ------------------------------------------------------------------
+      - name: Run tests
+        run: go test -count=1 -timeout 60s ./...
+
+      # ------------------------------------------------------------------
+      # 4. Release identifiers. Written to GITHUB_OUTPUT so later steps
+      #    can use ${{ steps.meta.outputs.tag }}.
+      #
+      #    Tag `master-<shortsha>` is unique per commit, short, and readable
+      #    on the Releases list. Example: master-a1b2c3d
+      # ------------------------------------------------------------------
+      - name: Compute tag, version, and short SHA
+        id: meta
+        run: |
+          set -euo pipefail
+
+          SHORT_SHA="${GITHUB_SHA::7}"
+          TAG="master-${SHORT_SHA}"
+          # Version stamped into the binary via -ldflags "-X main.version=...".
+          VERSION="${TAG}"
+
+          {
+            echo "short_sha=${SHORT_SHA}"
+            echo "tag=${TAG}"
+            echo "version=${VERSION}"
+            # Heredoc (EOF) — the commit subject may contain special
+            # characters that a single `key=value` GITHUB_OUTPUT line
+            # cannot swallow.
+            echo "commit_subject<<EOF"
+            git log -1 --pretty=%s
+            echo "EOF"
+          } >> "${GITHUB_OUTPUT}"
+
+          echo "Release tag:    ${TAG}"
+          echo "Full SHA:       ${GITHUB_SHA}"
+          echo "Commit subject: $(git log -1 --pretty=%s)"
+
+      # ------------------------------------------------------------------
+      # 5. Cross-compile. CGO_ENABLED=0 = pure Go, zero libc dependency
+      #    on the target OS. That is why windows/darwin are built on a
+      #    Linux runner.
+      #
+      #    -s -w  strips the symbol table and DWARF → smaller files.
+      #    -X     stamps version into the `version` variable in lacp.go.
+      #
+      #    File names are STABLE (no SHA). The link
+      #    .../releases/latest/download/lacp-windows-amd64.exe
+      #    always points at the newest release.
+      # ------------------------------------------------------------------
+      - name: Compile Windows and macOS binaries
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          # Linker flags shared by every target.
+          LDFLAGS="-s -w -X main.version=${VERSION} -X main.commit=${GITHUB_SHA}"
+
+          build() {
+            # $1 = GOOS, $2 = GOARCH, $3 = output file name
+            local goos="$1"
+            local goarch="$2"
+            local out="$3"
+            echo "==> ${goos}/${goarch}  →  dist/${out}"
+            GOOS="${goos}" GOARCH="${goarch}" CGO_ENABLED=0 \
+              go build -trimpath -ldflags="${LDFLAGS}" -o "dist/${out}" .
+          }
+
+          # Windows — 64-bit Intel/AMD (vast majority of PCs)
+          build windows amd64 lacp-windows-amd64.exe
+          # Windows — ARM64 (e.g. Snapdragon / Surface Pro X)
+          build windows arm64 lacp-windows-arm64.exe
+          # macOS Intel
+          build darwin  amd64 lacp-darwin-amd64
+          # macOS Apple Silicon (M1/M2/M3/M4)
+          build darwin  arm64 lacp-darwin-arm64
+
+          echo "Built files:"
+          ls -lh dist
+
+      # ------------------------------------------------------------------
+      # 6. Source ZIP. `git archive` packs ONLY what is in git at this
+      #    commit: .go, go.mod, Makefile, README, this workflow… No .git,
+      #    no local .exe, no dist/.
+      #
+      #    Directory prefix inside the ZIP (`lacp-<sha>/`) keeps unzip
+      #    from scattering files across the current folder.
+      # ------------------------------------------------------------------
+      - name: Pack source code (ZIP for Linux and self-compilation)
+        env:
+          SHORT_SHA: ${{ steps.meta.outputs.short_sha }}
+        run: |
+          set -euo pipefail
+          PREFIX="lacp-${SHORT_SHA}/"
+          git archive \
+            --format=zip \
+            --prefix="${PREFIX}" \
+            --output="dist/lacp-source.zip" \
+            HEAD
+          echo "Source: dist/lacp-source.zip ($(wc -c < dist/lacp-source.zip) bytes)"
+
+      # ------------------------------------------------------------------
+      # 7. SHA-256 of every artifact. After download the user can check
+      #    the file was not tampered with:
+      #      sha256sum -c SHA256SUMS.txt
+      #    (on Windows: `Get-FileHash .\file.exe -Algorithm SHA256`)
+      # ------------------------------------------------------------------
+      - name: Compute SHA-256
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          sha256sum \
+            lacp-windows-amd64.exe \
+            lacp-windows-arm64.exe \
+            lacp-darwin-amd64 \
+            lacp-darwin-arm64 \
+            lacp-source.zip \
+            > SHA256SUMS.txt
+          cat SHA256SUMS.txt
+
+      # ------------------------------------------------------------------
+      # 8. Release notes (markdown). Shown on the GitHub Releases page.
+      #    A quoted 'EOF' heredoc would NOT interpolate bash variables —
+      #    so we use a plain EOF and pass values through env:.
+      # ------------------------------------------------------------------
+      - name: Generate release notes
+        env:
+          TAG: ${{ steps.meta.outputs.tag }}
+          SHORT_SHA: ${{ steps.meta.outputs.short_sha }}
+          COMMIT_SUBJECT: ${{ steps.meta.outputs.commit_subject }}
+          SHA: ${{ github.sha }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          cat > dist/RELEASE_NOTES.md <<EOF
+          Automatic Lukas-Anti-Censorship-Proxy (lacp) release from \`${BRANCH}\` (commit \`${SHORT_SHA}\`).
+
+          **Commit:** ${COMMIT_SUBJECT}
+          **Full SHA:** \`${SHA}\`
+          **Tag:** \`${TAG}\`
+
+          ## Files
+
+          | File | Who it is for |
+          | --- | --- |
+          | \`lacp-windows-amd64.exe\` | Windows 64-bit (Intel/AMD) |
+          | \`lacp-windows-arm64.exe\` | Windows 64-bit ARM |
+          | \`lacp-darwin-amd64\` | macOS Intel |
+          | \`lacp-darwin-arm64\` | macOS Apple Silicon |
+          | \`lacp-source.zip\` | Linux and self-compilation |
+          | \`SHA256SUMS.txt\` | Checksums of the files above |
+
+          ## Windows
+
+          Download \`lacp-windows-amd64.exe\`, open PowerShell in that folder, and run:
+
+          \`\`\`powershell
+          .\\lacp-windows-amd64.exe
+          \`\`\`
+
+          The proxy listens on \`127.0.0.1:45777\` by default. Edit \`lacp.json\` (created next to the exe) to change \`port\` and other settings. Do not close the window — that is the server.
+
+          ## macOS
+
+          \`\`\`bash
+          chmod +x lacp-darwin-arm64   # or darwin-amd64 on Intel
+          ./lacp-darwin-arm64
+          \`\`\`
+
+          Gatekeeper will block the unsigned binary on first launch.
+          Fix: *System Settings → Privacy & Security → Open Anyway*,
+          or: \`xattr -cr lacp-darwin-arm64\`.
+
+          ## Linux / build from source
+
+          \`\`\`bash
+          unzip lacp-source.zip
+          cd lacp-${SHORT_SHA}
+          go test ./...
+          go build -ldflags="-s -w" -o lacp .
+          ./lacp
+          \`\`\`
+
+          Requires Go 1.22+. Details: \`docs/BUILD.md\` in the ZIP.
+          Polish readme: \`README-pl.md\`.
+          EOF
+
+      # ------------------------------------------------------------------
+      # 9. GitHub Release. `gh` is preinstalled on the runners.
+      #
+      #    --target  GITHUB_SHA  — the tag points AT THIS commit even if
+      #    someone pushes another one in the meantime.
+      #    --latest              — this release becomes "Latest" on GitHub.
+      #    --verify-tag          is not used: the tag is created here.
+      #
+      #    If this workflow is re-run on the same commit (Re-run jobs),
+      #    the tag already exists — we then update the assets instead of
+      #    failing with "tag already exists".
+      # ------------------------------------------------------------------
+      - name: Create or update GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ steps.meta.outputs.tag }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+
+          # Files uploaded as assets (RELEASE_NOTES.md is not an asset —
+          # its contents go in --notes-file).
+          assets=(
+            dist/lacp-windows-amd64.exe
+            dist/lacp-windows-arm64.exe
+            dist/lacp-darwin-amd64
+            dist/lacp-darwin-arm64
+            dist/lacp-source.zip
+            dist/SHA256SUMS.txt
+          )
+
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists — replacing assets (--clobber)."
+            gh release upload "${TAG}" "${assets[@]}" --clobber
+            gh release edit "${TAG}" \
+              --title "Lukas-Anti-Censorship-Proxy ${TAG}" \
+              --notes-file dist/RELEASE_NOTES.md \
+              --latest
+          else
+            echo "Creating new release ${TAG}."
+            gh release create "${TAG}" "${assets[@]}" \
+              --target "${SHA}" \
+              --title "Lukas-Anti-Censorship-Proxy ${TAG}" \
+              --notes-file dist/RELEASE_NOTES.md \
+              --latest
+          fi
+
+          echo "Done: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/releases/tag/${TAG}"

@@ -1,0 +1,7 @@
+{
+  "host": "127.0.0.1",
+  "port": 45777,
+  "timeout": "15s",
+  "gap": "10ms",
+  "quiet": false
+}
