@@ -17,7 +17,8 @@ No, just one minute. You run the program and You change two things in Windows ne
 4. Fill these two fields like on the picture below:
 ![How to configure proxy in Windows](how-to-configure.png)
 5. You can optionally check the checkbox "Don't use proxy server for local addresses (intranet)"
-6. You might need to change Windows DNS servers to some uncensored ones as well:
+6. Click the "Save" button.
+7. You might need to change Windows DNS servers to some uncensored ones as well:
 
    Try:
     - https://blog.uncensoreddns.org

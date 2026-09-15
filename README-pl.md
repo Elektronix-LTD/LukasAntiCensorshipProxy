@@ -21,7 +21,8 @@ w ustawieniach sieci Windows.
 4. Wypełnij te dwa pola tak jak na obrazku poniżej:
    ![Jak skonfigurować proxy w Windows](how-to-configure.png)
 5. Opcjonalnie zaznacz „Nie używaj serwera proxy dla adresów lokalnych (intranet)”.
-6. Może być też potrzebna zmiana serwerów DNS w Windows na nieocenzurowane.
+6. Kliknij przycisk "Zapisz".
+7. Może być też potrzebna zmiana serwerów DNS w Windows na nieocenzurowane.
 
    Spróbuj:
    - https://blog.uncensoreddns.org
